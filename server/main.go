@@ -6,7 +6,7 @@ import (
 	"log"
 	"net/http"
 
-	"../../rate_limiting"
+	server "github.com/arvchahal/Limitly/server/rate"
 )
 
 func main() {
@@ -18,13 +18,13 @@ func main() {
 	flag.Parse()
 
 	// Set the backend URL
-	rate_limiting.SetBackendURL(*backendURL)
+	server.SetBackendURL(*backendURL)
 
 	// Initialize the rate limiter
-	rate_limiting.SetRateLimiter(*algorithm, *rateLimit, *burstLimit)
+	server.SetRateLimiter(*algorithm, *rateLimit, *burstLimit)
 
 	// Start the rate-limiting proxy server
-	http.HandleFunc("/", rate_limiting.ProxyHandler)
+	http.HandleFunc("/", server.ProxyHandler)
 	fmt.Println("Rate-limiting proxy server running on http://localhost:8080")
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }

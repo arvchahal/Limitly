@@ -1,4 +1,4 @@
-package rate_limiting
+package server
 
 //ratelimiting.go
 import (
