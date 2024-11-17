@@ -18,7 +18,7 @@ type MatrixResponse struct {
 }
 
 // Cholesky Factorization Function
-func choleskyFactorization(matrix [][]float64) ([][]float64, error) {
+func CholeskyFactorization(matrix [][]float64) ([][]float64, error) {
 	n := len(matrix)
 	L := make([][]float64, n)
 	for i := range L {
@@ -56,7 +56,7 @@ func handleCholesky(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	L, err := choleskyFactorization(req.Matrix)
+	L, err := CholeskyFactorization(req.Matrix)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return

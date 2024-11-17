@@ -10,12 +10,14 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/time/rate"
+	matrix "github.com/arvchahal/Limitly/server/matrix"
+
+	server "github.com/arvchahal/Limitly/server/rate" // Import your custom rate-limiting package
 )
 
 // Client represents a client with a rate limiter
 type Client struct {
-	limiter  *rate.Limiter
+	limiter  server.RateLimiter
 	lastSeen time.Time
 }
 
@@ -24,20 +26,35 @@ var (
 	clientsMu sync.Mutex
 
 	// Rate limit parameters (modifiable via flags)
-	requestsPerSecond = 10
-	burstLimit        = 5
+	rateLimitAlgorithm = "token_bucket" // Default algorithm
+	requestsPerSecond  = 10
+	burstLimit         = 5
+	windowSize         = time.Second
 )
 
 // Example function to process the request
 func customFunction(r *http.Request) {
-	fmt.Println("Custom function executed")
+	matrixip := [][]float64{
+		{10.0, 2.0, 3.0, 4.0, 1.0, 0.5, 0.2, 0.1, 0.1, 0.3},
+		{2.0, 9.0, 1.5, 3.0, 1.0, 0.4, 0.2, 0.2, 0.1, 0.5},
+		{3.0, 1.5, 8.0, 2.0, 1.0, 0.3, 0.4, 0.1, 0.2, 0.3},
+		{4.0, 3.0, 2.0, 12.0, 2.0, 1.0, 0.5, 0.3, 0.2, 0.4},
+		{1.0, 1.0, 1.0, 2.0, 7.0, 0.5, 0.4, 0.3, 0.2, 0.5},
+		{0.5, 0.4, 0.3, 1.0, 0.5, 6.0, 1.0, 0.4, 0.3, 0.2},
+		{0.2, 0.2, 0.4, 0.5, 0.4, 1.0, 5.0, 0.3, 0.2, 0.1},
+		{0.1, 0.2, 0.1, 0.3, 0.3, 0.4, 0.3, 4.0, 0.2, 0.2},
+		{0.1, 0.1, 0.2, 0.2, 0.2, 0.3, 0.2, 0.2, 3.0, 0.1},
+		{0.3, 0.5, 0.3, 0.4, 0.5, 0.2, 0.1, 0.2, 0.1, 2.5},
+	}
+	z, _ := matrix.CholeskyFactorization(matrixip)
+	fmt.Println(z)
 	// Add your custom logic here
 	// For example, log request details
-	fmt.Printf("Request received: Method=%s, URL=%s\n", r.Method, r.URL)
+	// fmt.Printf("Request received: Method=%s, URL=%s\n", r.Method, r.URL)
 }
 
 // getClientLimiter retrieves or initializes a rate limiter for a given IP
-func getClientLimiter(ip string) *rate.Limiter {
+func getClientLimiter(ip string) server.RateLimiter {
 	clientsMu.Lock()
 	defer clientsMu.Unlock()
 
@@ -47,8 +64,21 @@ func getClientLimiter(ip string) *rate.Limiter {
 		return client.limiter
 	}
 
-	// If not, create a new limiter and add to the map
-	limiter := rate.NewLimiter(rate.Limit(requestsPerSecond), burstLimit)
+	// Initialize the appropriate rate limiter based on the selected algorithm
+	var limiter server.RateLimiter
+	switch rateLimitAlgorithm {
+	case "token_bucket":
+		limiter = server.NewTokenBucket(burstLimit, time.Second/time.Duration(requestsPerSecond))
+	case "leaky_bucket":
+		limiter = server.NewLeakyBucket(burstLimit, time.Second/time.Duration(requestsPerSecond))
+	case "sliding_window":
+		limiter = server.NewSlidingWindow(requestsPerSecond, windowSize)
+	case "fixed_window":
+		limiter = server.NewFixedWindow(requestsPerSecond, windowSize)
+	default:
+		log.Fatalf("Unknown rate limiting algorithm: %s", rateLimitAlgorithm)
+	}
+
 	clients[ip] = &Client{
 		limiter:  limiter,
 		lastSeen: time.Now(),
@@ -94,18 +124,11 @@ func extractIP(r *http.Request) string {
 
 func main() {
 	// Command-line arguments
-	// algorithm := flag.String("algorithm", "token_bucket", "Rate limiting algorithm to use") // Placeholder
-	rateLimit := flag.Int("rate", 10, "Number of requests per second")
-	burstLimitFlag := flag.Int("burst", 5, "Burst limit for the rate limiter")
+	flag.StringVar(&rateLimitAlgorithm, "algorithm", "token_bucket", "Rate limiting algorithm to use (token_bucket, leaky_bucket, sliding_window, fixed_window)")
+	flag.IntVar(&requestsPerSecond, "rate", 10, "Number of requests per second")
+	flag.IntVar(&burstLimit, "burst", 5, "Burst limit for the rate limiter")
+	flag.DurationVar(&windowSize, "window", time.Second, "Window size for window-based algorithms")
 	flag.Parse()
-
-	// Update rate limit parameters if provided
-	if *rateLimit > 0 {
-		requestsPerSecond = *rateLimit
-	}
-	if *burstLimitFlag > 0 {
-		burstLimit = *burstLimitFlag
-	}
 
 	// Start the cleanup goroutine
 	go cleanupClients()
@@ -121,6 +144,7 @@ func main() {
 		// Check if the request is allowed
 		if !limiter.Allow() {
 			http.Error(w, "Rate limit exceeded", http.StatusTooManyRequests)
+			fmt.Println("dead")
 			return
 		}
 
@@ -131,6 +155,6 @@ func main() {
 		fmt.Fprintf(w, "Hello from the Go server!")
 	})
 
-	fmt.Println("Rate-limiting server running on http://0.0.0.0:8080")
-	log.Fatal(http.ListenAndServe("0.0.0.0:8080", nil))
+	fmt.Println("Rate-limiting server running on http://0.0.0.0:80")
+	log.Fatal(http.ListenAndServe("0.0.0.0:80", nil))
 }
