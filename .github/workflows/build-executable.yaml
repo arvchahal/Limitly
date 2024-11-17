@@ -31,3 +31,8 @@ jobs:
       run: |
         cd server
         go test -v ./...
+    - name: Upload server executable
+      uses: actions/upload-artifact@v3
+      with:
+        name: server-rpi3
+        path: server/server-rpi3
