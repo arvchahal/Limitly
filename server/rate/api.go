@@ -23,6 +23,10 @@ func SetRateLimiter(algorithm string, rate int, burst int) {
 		rateLimiter = NewTokenBucket(burst, time.Second/time.Duration(rate))
 	case "leaky_bucket":
 		rateLimiter = NewLeakyBucket(burst, time.Second/time.Duration(rate))
+	case "sliding_window":
+		rateLimiter = NewSlidingWindow(rate, time.Second)
+	case "fixed_window":
+		rateLimiter = NewFixedWindow(rate, time.Second)
 	default:
 		log.Fatalf("Unknown algorithm: %s", algorithm)
 	}

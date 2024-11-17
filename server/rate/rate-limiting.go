@@ -91,6 +91,91 @@ func (lb *LeakyBucket) Allow() bool {
 	return false
 }
 
+// SlidingWindow struct for the sliding window algorithm
+type SlidingWindow struct {
+	windowSize time.Duration
+	limit      int
+	timestamps []time.Time
+	mutex      sync.Mutex
+}
+
+// NewSlidingWindow creates a new SlidingWindow instance
+func NewSlidingWindow(limit int, windowSize time.Duration) *SlidingWindow {
+	return &SlidingWindow{
+		windowSize: windowSize,
+		limit:      limit,
+		timestamps: []time.Time{},
+	}
+}
+
+// Allow checks if a request can proceed under the sliding window algorithm
+func (sw *SlidingWindow) Allow() bool {
+	sw.mutex.Lock()
+	defer sw.mutex.Unlock()
+
+	now := time.Now()
+
+	// Remove timestamps outside the window
+	validWindowStart := now.Add(-sw.windowSize)
+	newTimestamps := []time.Time{}
+	for _, ts := range sw.timestamps {
+		if ts.After(validWindowStart) {
+			newTimestamps = append(newTimestamps, ts)
+		}
+	}
+	sw.timestamps = newTimestamps
+
+	// Check if within limit
+	if len(sw.timestamps) < sw.limit {
+		sw.timestamps = append(sw.timestamps, now)
+		return true
+	}
+
+	return false
+}
+
+// FixedWindow struct for the fixed window algorithm
+type FixedWindow struct {
+	windowSize time.Duration
+	limit      int
+	count      int
+	windowStart time.Time
+	mutex       sync.Mutex
+}
+
+// NewFixedWindow creates a new FixedWindow instance
+func NewFixedWindow(limit int, windowSize time.Duration) *FixedWindow {
+	return &FixedWindow{
+		windowSize:  windowSize,
+		limit:       limit,
+		count:       0,
+		windowStart: time.Now(),
+	}
+}
+
+// Allow checks if a request can proceed under the fixed window algorithm
+func (fw *FixedWindow) Allow() bool {
+	fw.mutex.Lock()
+	defer fw.mutex.Unlock()
+
+	now := time.Now()
+
+	// Check if we are still in the current window
+	if now.Sub(fw.windowStart) > fw.windowSize {
+		// Reset the window
+		fw.windowStart = now
+		fw.count = 0
+	}
+
+	// Check if within limit
+	if fw.count < fw.limit {
+		fw.count++
+		return true
+	}
+
+	return false
+}
+
 // Helper functions
 func min(a, b int) int {
 	if a < b {
