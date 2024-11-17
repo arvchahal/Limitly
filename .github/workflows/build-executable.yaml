@@ -1,0 +1,33 @@
+name: Build Executable for Raspberry Pi 3
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    # Step 1: Checkout the repository
+    - name: Checkout repository
+      uses: actions/checkout@v2
+
+    # Step 2: Set up Go environment
+    - name: Set up Go
+      uses: actions/setup-go@v2
+      with:
+        go-version: ^1.15
+
+    # Step 3: Build the executable for Raspberry Pi 3 (ARM architecture)
+    - name: Build for Raspberry Pi 3
+      run: |
+        cd server
+        GOOS=linux GOARCH=arm GOARM=7 go build -o server-rpi3
+
+    # Step 4: Test the Go application
+    - name: Run tests
+      run: |
+        cd server
+        go test -v ./...
