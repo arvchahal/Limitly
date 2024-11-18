@@ -11,7 +11,6 @@ import (
 	"time"
 
 	matrix "github.com/arvchahal/Limitly/server/matrix"
-
 	server "github.com/arvchahal/Limitly/server/rate" // Import your custom rate-limiting package
 )
 
@@ -30,6 +29,11 @@ var (
 	requestsPerSecond  = 10
 	burstLimit         = 5
 	windowSize         = time.Second
+
+	// Counters for accepted and denied requests
+	acceptedCount  int
+	deniedCount    int
+	requestCountMu sync.Mutex
 )
 
 // Example function to process the request
@@ -48,11 +52,6 @@ func customFunction(r *http.Request) {
 	}
 	matrix.CholeskyFactorization(matrixip)
 	fmt.Println("ACCEPTED")
-	// z, _ := matrix.CholeskyFactorization(matrixip)
-	// fmt.Println(z)
-	// Add your custom logic here
-	// For example, log request details
-	// fmt.Printf("Request received: Method=%s, URL=%s\n", r.Method, r.URL)
 }
 
 // getClientLimiter retrieves or initializes a rate limiter for a given IP
@@ -77,8 +76,8 @@ func getClientLimiter(ip string) server.RateLimiter {
 		limiter = server.NewSlidingWindow(requestsPerSecond, windowSize)
 	case "fixed_window":
 		limiter = server.NewFixedWindow(requestsPerSecond, windowSize)
-    case "no_rate_limit":
-        limiter = &server.NoRateLimiter{}
+	case "no_rate_limit":
+		limiter = &server.NoRateLimiter{}
 	default:
 		log.Fatalf("Unknown rate limiting algorithm: %s", rateLimitAlgorithm)
 	}
@@ -108,18 +107,14 @@ func cleanupClients() {
 func extractIP(r *http.Request) string {
 	ipPort := r.RemoteAddr
 	ip := ipPort
-	// In some cases, RemoteAddr might not contain a port
 	if strings.Contains(ipPort, ":") {
-		// Handle IPv6 addresses
 		if strings.Count(ipPort, ":") > 1 {
-			// IPv6: [::1]:8080
 			ip = strings.Trim(ipPort, "[]")
 			colon := strings.LastIndex(ip, ":")
 			if colon != -1 {
 				ip = ip[:colon]
 			}
 		} else {
-			// IPv4: 192.168.1.1:8080
 			ip, _, _ = net.SplitHostPort(ipPort)
 		}
 	}
@@ -137,6 +132,16 @@ func main() {
 	// Start the cleanup goroutine
 	go cleanupClients()
 
+	// Periodic logging of counts
+	go func() {
+		for {
+			time.Sleep(time.Minute)
+			requestCountMu.Lock()
+			log.Printf("Total accepted requests: %d, Total denied requests: %d", acceptedCount, deniedCount)
+			requestCountMu.Unlock()
+		}
+	}()
+
 	// Start the rate-limiting server
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		// Extract client IP address
@@ -147,10 +152,26 @@ func main() {
 
 		// Check if the request is allowed
 		if !limiter.Allow() {
+			timestamp := time.Now().Format("2006-01-02 15:04:05")
+			log.Printf("[%s] Request from IP %s denied: Rate limit exceeded", timestamp, ip)
+
+			// Increment denied count
+			requestCountMu.Lock()
+			deniedCount++
+			requestCountMu.Unlock()
+
 			http.Error(w, "Rate limit exceeded", http.StatusTooManyRequests)
-			fmt.Println("dead")
 			return
 		}
+
+		// Log timestamp for accepted request
+		timestamp := time.Now().Format("2006-01-02 15:04:05")
+		log.Printf("[%s] Request from IP %s accepted", timestamp, ip)
+
+		// Increment accepted count
+		requestCountMu.Lock()
+		acceptedCount++
+		requestCountMu.Unlock()
 
 		// Call your custom function
 		customFunction(r)
