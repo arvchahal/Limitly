@@ -30,9 +30,10 @@ var (
 	burstLimit         = 5
 	windowSize         = time.Second
 
-	// Counters for accepted and denied requests
+	// Counters for requests
 	acceptedCount  int
 	deniedCount    int
+	non200Count    int
 	requestCountMu sync.Mutex
 )
 
@@ -59,13 +60,11 @@ func getClientLimiter(ip string) server.RateLimiter {
 	clientsMu.Lock()
 	defer clientsMu.Unlock()
 
-	// Check if the client already has a limiter
 	if client, exists := clients[ip]; exists {
 		client.lastSeen = time.Now()
 		return client.limiter
 	}
 
-	// Initialize the appropriate rate limiter based on the selected algorithm
 	var limiter server.RateLimiter
 	switch rateLimitAlgorithm {
 	case "token_bucket":
@@ -103,6 +102,53 @@ func cleanupClients() {
 	}
 }
 
+func main() {
+	flag.StringVar(&rateLimitAlgorithm, "algorithm", "token_bucket", "Rate limiting algorithm to use")
+	flag.IntVar(&requestsPerSecond, "rate", 10, "Number of requests per second")
+	flag.IntVar(&burstLimit, "burst", 5, "Burst limit for the rate limiter")
+	flag.DurationVar(&windowSize, "window", time.Second, "Window size for window-based algorithms")
+	flag.Parse()
+
+	go cleanupClients()
+
+	go func() {
+		for {
+			time.Sleep(time.Minute)
+			requestCountMu.Lock()
+			log.Printf("Total accepted requests: %d, Total denied requests: %d, Non-200 responses: %d", acceptedCount, deniedCount, non200Count)
+			requestCountMu.Unlock()
+		}
+	}()
+
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		ip := extractIP(r)
+		limiter := getClientLimiter(ip)
+
+		if !limiter.Allow() {
+			requestCountMu.Lock()
+			deniedCount++
+			non200Count++
+			requestCountMu.Unlock()
+
+			w.WriteHeader(http.StatusTooManyRequests)
+			log.Printf("[%s] Response sent: Status %d, IP %s", time.Now().Format("2006-01-02 15:04:05"), http.StatusTooManyRequests, ip)
+			fmt.Fprint(w, "Rate limit exceeded")
+			return
+		}
+
+		requestCountMu.Lock()
+		acceptedCount++
+		requestCountMu.Unlock()
+
+		w.WriteHeader(http.StatusOK)
+		log.Printf("[%s] Response sent: Status %d, IP %s", time.Now().Format("2006-01-02 15:04:05"), http.StatusOK, ip)
+		fmt.Fprint(w, "Hello from the Go server!")
+	})
+
+	fmt.Println("Rate-limiting server running on http://0.0.0.0:80")
+	log.Fatal(http.ListenAndServe("0.0.0.0:80", nil))
+}
+
 // extractIP extracts the IP address from the request's RemoteAddr
 func extractIP(r *http.Request) string {
 	ipPort := r.RemoteAddr
@@ -119,67 +165,4 @@ func extractIP(r *http.Request) string {
 		}
 	}
 	return ip
-}
-
-func main() {
-	// Command-line arguments
-	flag.StringVar(&rateLimitAlgorithm, "algorithm", "token_bucket", "Rate limiting algorithm to use (token_bucket, leaky_bucket, sliding_window, fixed_window, no_rate_limit)")
-	flag.IntVar(&requestsPerSecond, "rate", 10, "Number of requests per second")
-	flag.IntVar(&burstLimit, "burst", 5, "Burst limit for the rate limiter")
-	flag.DurationVar(&windowSize, "window", time.Second, "Window size for window-based algorithms")
-	flag.Parse()
-
-	// Start the cleanup goroutine
-	go cleanupClients()
-
-	// Periodic logging of counts
-	go func() {
-		for {
-			time.Sleep(time.Minute)
-			requestCountMu.Lock()
-			log.Printf("Total accepted requests: %d, Total denied requests: %d", acceptedCount, deniedCount)
-			requestCountMu.Unlock()
-		}
-	}()
-
-	// Start the rate-limiting server
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		// Extract client IP address
-		ip := extractIP(r)
-
-		// Get the rate limiter for this IP
-		limiter := getClientLimiter(ip)
-
-		// Check if the request is allowed
-		if !limiter.Allow() {
-			timestamp := time.Now().Format("2006-01-02 15:04:05")
-			log.Printf("[%s] Request from IP %s denied: Rate limit exceeded", timestamp, ip)
-
-			// Increment denied count
-			requestCountMu.Lock()
-			deniedCount++
-			requestCountMu.Unlock()
-
-			http.Error(w, "Rate limit exceeded", http.StatusTooManyRequests)
-			return
-		}
-
-		// Log timestamp for accepted request
-		timestamp := time.Now().Format("2006-01-02 15:04:05")
-		log.Printf("[%s] Request from IP %s accepted", timestamp, ip)
-
-		// Increment accepted count
-		requestCountMu.Lock()
-		acceptedCount++
-		requestCountMu.Unlock()
-
-		// Call your custom function
-		customFunction(r)
-
-		// Handle the request directly
-		fmt.Fprintf(w, "Hello from the Go server!")
-	})
-
-	fmt.Println("Rate-limiting server running on http://0.0.0.0:80")
-	log.Fatal(http.ListenAndServe("0.0.0.0:80", nil))
 }

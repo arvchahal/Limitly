@@ -30,13 +30,14 @@ type RequestData struct {
 }
 
 var (
-	totalRequestsSent   int
-	totalRequestsServed int
-	requestsMu          sync.Mutex
-	config              Config
-	rateFunc            func(float64) float64 // Dynamic rate function
-	stopClient          = make(chan struct{})
-	wg                  sync.WaitGroup
+	totalRequestsSent    int
+	totalRequestsServed  int
+	totalNon200Responses int
+	requestsMu           sync.Mutex
+	config               Config
+	rateFunc             func(float64) float64 // Dynamic rate function
+	stopClient           = make(chan struct{})
+	wg                   sync.WaitGroup
 )
 
 // trackTermination handles clean shutdown and prints metrics
@@ -53,13 +54,14 @@ func trackTermination() {
 	}()
 }
 
-// printMetrics prints the total requests sent and served
+// printMetrics prints the total requests sent, served, and non-200 responses
 func printMetrics() {
 	requestsMu.Lock()
 	defer requestsMu.Unlock()
 	fmt.Println("\nClient shutting down...")
 	fmt.Printf("Total requests sent: %d\n", totalRequestsSent)
-	fmt.Printf("Total requests served: %d\n", totalRequestsServed)
+	fmt.Printf("Total requests served (200 OK): %d\n", totalRequestsServed)
+	fmt.Printf("Total non-200 responses: %d\n", totalNon200Responses)
 }
 
 // sendRequest sends a single POST request to the server
@@ -101,14 +103,17 @@ func sendRequest(ctx context.Context) {
 		}
 		defer resp.Body.Close()
 
-		// Print the response status code
-		fmt.Printf("Response Code: %d\n", resp.StatusCode)
+		// Print the response status code with a timestamp
+		timestamp := time.Now().Format("2006-01-02 15:04:05")
+		fmt.Printf("[%s] Response Code: %d\n", timestamp, resp.StatusCode)
 
 		// Track the request
 		requestsMu.Lock()
 		totalRequestsSent++
 		if resp.StatusCode == http.StatusOK {
 			totalRequestsServed++
+		} else {
+			totalNon200Responses++
 		}
 		requestsMu.Unlock()
 	}
