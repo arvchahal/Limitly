@@ -3,325 +3,237 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/csv"
 	"encoding/json"
-	"errors"
 	"fmt"
+	"io/ioutil"
 	"math"
-	"math/rand"
 	"net/http"
 	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 )
 
-// Config represents the structure of the configuration file.
-// It now includes a RateFunc field to hold the rate-limiting function.
+// Config holds the configuration for the client
 type Config struct {
 	Destination string    `json:"destination"`
-	Duration    float64   `json:"duration"`
-	RateType    string    `json:"rateType"`
-	Params      []float64 `json:"params"`
-	RateFunc    func(float64) float64
+	Duration    int       `json:"duration"`  // in seconds
+	RateType    string    `json:"rateType"`  // const, linear, sin, exp
+	Params      []float64 `json:"params"`    // parameters for rate function
 }
 
-// IntervalData holds the elapsed time and the number of requests sent in that interval.
-type IntervalData struct {
-	ElapsedTimeMs float64
-	NumRequests   int
+// RequestData represents the structure of the data sent in each request
+type RequestData struct {
+	Timestamp int64  `json:"timestamp"`
+	Message   string `json:"message"`
 }
 
-// loadConfig reads a JSON configuration file and unmarshals it into a Config struct.
-// It then initializes the RateFunc based on the RateType and Params.
-func loadConfig(configFile string) (Config, error) {
-	var config Config
+var (
+	totalRequestsSent   int
+	totalRequestsServed int
+	requestsMu          sync.Mutex
+	config              Config
+	rateFunc            func(float64) float64 // Dynamic rate function
+	stopClient          = make(chan struct{})
+	wg                  sync.WaitGroup
+)
 
-	// Read the configuration file
-	file, err := os.ReadFile(configFile)
-	if err != nil {
-		return config, fmt.Errorf("failed to read config file: %w", err)
-	}
+// trackTermination handles clean shutdown and prints metrics
+func trackTermination() {
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 
-	// Unmarshal JSON into Config struct
-	err = json.Unmarshal(file, &config)
-	if err != nil {
-		return config, fmt.Errorf("failed to unmarshal config JSON: %w", err)
-	}
-
-	// Initialize the RateFunc based on RateType and Params
-	rateFunc, err := config.initRateFunc()
-	if err != nil {
-		return config, err
-	}
-	config.RateFunc = rateFunc
-
-	return config, nil
+	go func() {
+		<-stop
+		close(stopClient) // Signal the client to stop
+		wg.Wait()         // Wait for all requests to complete
+		printMetrics()    // Print the final metrics
+		os.Exit(0)
+	}()
 }
 
-// initRateFunc initializes the RateFunc field based on the RateType and Params.
-// It returns an error if the RateType is invalid or if required parameters are missing.
-func (c *Config) initRateFunc() (func(float64) float64, error) {
-	rateType := c.RateType
-	params := c.Params
+// printMetrics prints the total requests sent and served
+func printMetrics() {
+	requestsMu.Lock()
+	defer requestsMu.Unlock()
+	fmt.Println("\nClient shutting down...")
+	fmt.Printf("Total requests sent: %d\n", totalRequestsSent)
+	fmt.Printf("Total requests served: %d\n", totalRequestsServed)
+}
 
-	var rateFunc func(float64) float64
+// sendRequest sends a single POST request to the server
+func sendRequest(ctx context.Context) {
+	defer wg.Done()
 
-	// Determine the required number of parameters based on the rate type
-	var requiredParams int
-	switch rateType {
-	case "const":
-		requiredParams = 1
-	case "linear":
-		requiredParams = 2
-	case "sin":
-		requiredParams = 3
-	case "exp":
-		requiredParams = 3
+	select {
+	case <-ctx.Done():
+		// Context canceled, exit the function
+		return
 	default:
-		return nil, errors.New("invalid rate type; must be const, linear, sin, or exp")
-	}
+		// Prepare the request data
+		data := RequestData{
+			Timestamp: time.Now().UnixNano(),
+			Message:   "Hello from client!",
+		}
+		jsonData, err := json.Marshal(data)
+		if err != nil {
+			fmt.Println("Failed to marshal JSON:", err)
+			return
+		}
 
-	// Check if the provided parameters meet the required number
-	if len(params) < requiredParams {
-		return nil, fmt.Errorf("%s rate type requires %d parameter(s)", rateType, requiredParams)
-	}
+		// Send the POST request
+		req, err := http.NewRequestWithContext(ctx, "POST", "http://"+config.Destination, bytes.NewBuffer(jsonData))
+		if err != nil {
+			fmt.Println("Failed to create request:", err)
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
 
-	// Define the rate function based on the rate type
-	switch rateType {
+		client := &http.Client{
+			Timeout: 5 * time.Second,
+		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			fmt.Println("Failed to send request:", err)
+			return
+		}
+		defer resp.Body.Close()
+
+		// Track the request
+		requestsMu.Lock()
+		totalRequestsSent++
+		if resp.StatusCode == http.StatusOK {
+			totalRequestsServed++
+		}
+		requestsMu.Unlock()
+	}
+}
+
+// startClient sends requests based on the dynamic rate function
+func startClient() {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(config.Duration)*time.Second)
+	defer cancel()
+
+	startTime := time.Now()
+
+	for {
+		select {
+		case <-ctx.Done():
+			// Stop sending requests after the duration
+			return
+		case <-stopClient:
+			// Stop sending requests due to termination
+			return
+		default:
+			// Calculate elapsed time in seconds
+			elapsed := time.Since(startTime).Seconds()
+
+			// Get the current rate from the rate function
+			currentRate := rateFunc(elapsed)
+
+			// Ensure rate is non-negative
+			if currentRate <= 0 {
+				time.Sleep(time.Second)
+				continue
+			}
+
+			// Send requests at the calculated rate
+			requestInterval := time.Second / time.Duration(currentRate)
+			time.Sleep(requestInterval)
+
+			wg.Add(1)
+			go sendRequest(ctx)
+		}
+	}
+}
+
+// initRateFunc initializes the rate function based on rateType and params
+func initRateFunc() error {
+	switch config.RateType {
 	case "const":
-		a := params[0]
+		if len(config.Params) < 1 {
+			return fmt.Errorf("const rate type requires 1 parameter")
+		}
 		rateFunc = func(t float64) float64 {
-			return a
+			return config.Params[0]
 		}
 	case "linear":
-		m := params[0]
-		b := params[1]
+		if len(config.Params) < 2 {
+			return fmt.Errorf("linear rate type requires 2 parameters")
+		}
+		m, b := config.Params[0], config.Params[1]
 		rateFunc = func(t float64) float64 {
 			return m*t + b
 		}
 	case "sin":
-		a := params[0]
-		b := params[1]
-		c := params[2]
+		if len(config.Params) < 3 {
+			return fmt.Errorf("sin rate type requires 3 parameters")
+		}
+		a, b, c := config.Params[0], config.Params[1], config.Params[2]
 		rateFunc = func(t float64) float64 {
 			return a*math.Sin(t/b) + c
 		}
 	case "exp":
-		a := params[0]
-		b := params[1]
-		c := params[2]
+		if len(config.Params) < 3 {
+			return fmt.Errorf("exp rate type requires 3 parameters")
+		}
+		a, b, c := config.Params[0], config.Params[1], config.Params[2]
 		rateFunc = func(t float64) float64 {
 			return a*math.Exp(b*t) + c
 		}
+	default:
+		return fmt.Errorf("invalid rate type: %s", config.RateType)
 	}
-
-	return rateFunc, nil
+	return nil
 }
 
-// sendRequests sends HTTP POST requests with garbage data to the destination.
-// It operates for the duration specified in the Config, sending requests at a rate determined by RateFunc.
-// Additionally, it logs the elapsed time and number of requests for each interval to an output file.
-func sendRequests(config Config) error {
-	// Define the total duration and the interval for rate calculations
-	totalDuration := time.Duration(config.Duration * float64(time.Second))
-	interval := 100 * time.Millisecond // 100ms intervals
-
-	// Create a context that will be canceled after the total duration
-	ctx, cancel := context.WithTimeout(context.Background(), totalDuration)
-	defer cancel()
-
-	// Define the number of workers
-	numWorkers := 100
-	var wg sync.WaitGroup
-
-	// Create a buffered channel to queue request jobs
-	requestChan := make(chan struct{}, 1000) // Buffered to prevent blocking
-
-	// Create an HTTP client with a timeout
-	httpClient := &http.Client{
-		Timeout: 5 * time.Second,
-	}
-
-	// Define a slice to hold interval data
-	var intervals []IntervalData
-	var intervalsMutex sync.Mutex // To protect concurrent access to intervals slice
-
-	// Initialize the total number of requests sent
-	totalRequests := 0
-
-	// Worker function without id
-	worker := func() {
-		defer wg.Done()
-		for range requestChan {
-			// Generate some garbage data (e.g., random JSON)
-			data := map[string]interface{}{
-				"timestamp": time.Now().UnixNano(),
-				"value":     rand.Float64(),
-			}
-			jsonData, err := json.Marshal(data)
-			if err != nil {
-				// If marshaling fails, skip this request
-				continue
-			}
-
-			// Create a new HTTP POST request
-			req, err := http.NewRequestWithContext(ctx, "POST", fmt.Sprintf("http://%s", config.Destination), bytes.NewBuffer(jsonData))
-			if err != nil {
-				// If request creation fails, skip this request
-				continue
-			}
-			req.Header.Set("Content-Type", "application/json")
-
-			// Send the HTTP request
-			resp, err := httpClient.Do(req)
-			if err != nil {
-				// Handle the error as needed (e.g., log it)
-				continue
-			}
-
-			// It's important to close the response body to prevent resource leaks
-			resp.Body.Close()
-		}
-	}
-
-	// Launch workers
-	wg.Add(numWorkers)
-	for i := 0; i < numWorkers; i++ {
-		go worker()
-	}
-
-	// Start the ticker for intervals
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	// Record the start time
-	startTime := time.Now()
-
-	// Variable to accumulate fractional requests
-	var fractionalRequests float64
-
-	// Main loop to send requests based on the rate function
-loop:
-	for {
-		select {
-		case <-ctx.Done():
-			// Time is up; stop sending requests
-			close(requestChan)
-			wg.Wait()
-			break loop // Exit the loop to proceed to CSV writing
-		case tickTime := <-ticker.C:
-			// Calculate elapsed time in seconds
-			elapsed := tickTime.Sub(startTime).Seconds()
-			if elapsed > config.Duration {
-				// Exceeded duration; stop sending
-				close(requestChan)
-				wg.Wait()
-				break loop // Exit the loop to proceed to CSV writing
-			}
-
-			// Get the current rate from the rate function
-			currentRate := config.RateFunc(elapsed)
-
-			// Ensure that the rate is non-negative
-			if currentRate < 0 {
-				currentRate = 0
-			}
-
-			// Calculate the number of requests for this interval
-			requestsThisInterval := currentRate * interval.Seconds()
-			totalRequestsFloat := requestsThisInterval + fractionalRequests
-			numRequests := int(math.Floor(totalRequestsFloat))
-			fractionalRequests = totalRequestsFloat - float64(numRequests)
-
-			// Send the requests by adding to the request channel
-			for i := 0; i < numRequests; i++ {
-				select {
-				case requestChan <- struct{}{}:
-					// Request added to the channel
-				case <-ctx.Done():
-					// Context canceled while sending
-					close(requestChan)
-					wg.Wait()
-					break loop // Exit the loop to proceed to CSV writing
-				}
-			}
-
-			// Update the total number of requests
-			totalRequests += numRequests
-
-			// Log the interval data
-			intervalData := IntervalData{
-				ElapsedTimeMs: elapsed * 1000, // Convert seconds to milliseconds
-				NumRequests:   numRequests,
-			}
-
-			// Protect concurrent access to the intervals slice
-			intervalsMutex.Lock()
-			intervals = append(intervals, intervalData)
-			intervalsMutex.Unlock()
-		}
-	}
-
-	// Write interval data to CSV
-	outputFileName := "output.csv"
-
-	// Create the CSV file
-	file, err := os.Create(outputFileName)
+// loadConfig reads the configuration from the provided JSON file
+func loadConfig(configFile string) error {
+	file, err := ioutil.ReadFile(configFile)
 	if err != nil {
-		return fmt.Errorf("failed to create output file: %w", err)
+		return fmt.Errorf("failed to read config file: %w", err)
 	}
-	defer file.Close()
-
-	// Initialize CSV writer
-	writer := csv.NewWriter(file)
-	defer writer.Flush()
-
-	// Write CSV headers
-	err = writer.Write([]string{"ElapsedTimeMs", "NumRequests"})
+	err = json.Unmarshal(file, &config)
 	if err != nil {
-		return fmt.Errorf("failed to write CSV headers: %w", err)
+		return fmt.Errorf("failed to parse config file: %w", err)
 	}
-
-	// Write interval data
-	intervalsMutex.Lock()
-	defer intervalsMutex.Unlock()
-	for _, data := range intervals {
-		record := []string{
-			fmt.Sprintf("%.0f", data.ElapsedTimeMs),
-			fmt.Sprintf("%d", data.NumRequests),
-		}
-		err := writer.Write(record)
-		if err != nil {
-			return fmt.Errorf("failed to write CSV record: %w", err)
-		}
-	}
-
-	fmt.Printf("Interval data has been written to %s\n", outputFileName)
-	fmt.Printf("Total number of requests sent: %d\n", totalRequests)
 	return nil
 }
 
 func main() {
+	// Initialize termination tracking
+	trackTermination()
+
+	// Parse command-line arguments
 	if len(os.Args) < 2 {
 		fmt.Println("Usage: go run main.go <config_file>")
 		os.Exit(1)
 	}
-
 	configFile := os.Args[1]
-	config, err := loadConfig(configFile)
+
+	// Load configuration from the JSON file
+	err := loadConfig(configFile)
 	if err != nil {
 		fmt.Printf("Error loading config: %v\n", err)
 		os.Exit(1)
 	}
 
-	fmt.Printf("Destination: %s\nDuration: %f seconds\n", config.Destination, config.Duration)
-
-	// Start sending requests
-	fmt.Println("Starting to send requests...")
-	err = sendRequests(config)
+	// Initialize rate function
+	err = initRateFunc()
 	if err != nil {
-		fmt.Printf("Error sending requests: %v\n", err)
+		fmt.Printf("Error initializing rate function: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Println("Finished sending requests.")
+
+	// Print configuration
+	fmt.Printf("Loaded configuration: Destination=%s, Duration=%d, RateType=%s, Params=%v\n", config.Destination, config.Duration, config.RateType, config.Params)
+
+	// Start sending requests
+	fmt.Printf("Sending requests to %s for %d seconds with rate type '%s'...\n", config.Destination, config.Duration, config.RateType)
+	startClient()
+
+	// Ensure metrics are printed on normal termination
+	printMetrics()
 }

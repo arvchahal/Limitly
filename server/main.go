@@ -46,8 +46,10 @@ func customFunction(r *http.Request) {
 		{0.1, 0.1, 0.2, 0.2, 0.2, 0.3, 0.2, 0.2, 3.0, 0.1},
 		{0.3, 0.5, 0.3, 0.4, 0.5, 0.2, 0.1, 0.2, 0.1, 2.5},
 	}
-	z, _ := matrix.CholeskyFactorization(matrixip)
-	fmt.Println(z)
+	matrix.CholeskyFactorization(matrixip)
+	fmt.Println("ACCEPTED")
+	// z, _ := matrix.CholeskyFactorization(matrixip)
+	// fmt.Println(z)
 	// Add your custom logic here
 	// For example, log request details
 	// fmt.Printf("Request received: Method=%s, URL=%s\n", r.Method, r.URL)
@@ -75,6 +77,8 @@ func getClientLimiter(ip string) server.RateLimiter {
 		limiter = server.NewSlidingWindow(requestsPerSecond, windowSize)
 	case "fixed_window":
 		limiter = server.NewFixedWindow(requestsPerSecond, windowSize)
+    case "no_rate_limit":
+        limiter = &server.NoRateLimiter{}
 	default:
 		log.Fatalf("Unknown rate limiting algorithm: %s", rateLimitAlgorithm)
 	}
@@ -124,7 +128,7 @@ func extractIP(r *http.Request) string {
 
 func main() {
 	// Command-line arguments
-	flag.StringVar(&rateLimitAlgorithm, "algorithm", "token_bucket", "Rate limiting algorithm to use (token_bucket, leaky_bucket, sliding_window, fixed_window)")
+	flag.StringVar(&rateLimitAlgorithm, "algorithm", "token_bucket", "Rate limiting algorithm to use (token_bucket, leaky_bucket, sliding_window, fixed_window, no_rate_limit)")
 	flag.IntVar(&requestsPerSecond, "rate", 10, "Number of requests per second")
 	flag.IntVar(&burstLimit, "burst", 5, "Burst limit for the rate limiter")
 	flag.DurationVar(&windowSize, "window", time.Second, "Window size for window-based algorithms")

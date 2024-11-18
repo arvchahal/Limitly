@@ -27,6 +27,8 @@ func SetRateLimiter(algorithm string, rate int, burst int) {
 		rateLimiter = NewSlidingWindow(rate, time.Second)
 	case "fixed_window":
 		rateLimiter = NewFixedWindow(rate, time.Second)
+	case "no_rate_limit":
+        rateLimiter = &NoRateLimiter{}
 	default:
 		log.Fatalf("Unknown algorithm: %s", algorithm)
 	}

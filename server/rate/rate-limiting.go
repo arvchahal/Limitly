@@ -6,6 +6,15 @@ import (
 	"time"
 )
 
+// NoRateLimiter struct for no rate limiting
+type NoRateLimiter struct{}
+
+// Allow always returns true for NoRateLimiter
+func (nrl *NoRateLimiter) Allow() bool {
+    return true
+}
+
+
 // RateLimiter interface defines the Allow method to be used by both algorithms
 type RateLimiter interface {
 	Allow() bool
