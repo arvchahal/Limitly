@@ -18,9 +18,9 @@ import (
 // Config holds the configuration for the client
 type Config struct {
 	Destination string    `json:"destination"`
-	Duration    int       `json:"duration"`  // in seconds
-	RateType    string    `json:"rateType"`  // const, linear, sin, exp
-	Params      []float64 `json:"params"`    // parameters for rate function
+	Duration    int       `json:"duration"` // in seconds
+	RateType    string    `json:"rateType"` // const, linear, sin, exp
+	Params      []float64 `json:"params"`   // parameters for rate function
 }
 
 // RequestData represents the structure of the data sent in each request
@@ -100,6 +100,9 @@ func sendRequest(ctx context.Context) {
 			return
 		}
 		defer resp.Body.Close()
+
+		// Print the response status code
+		fmt.Printf("Response Code: %d\n", resp.StatusCode)
 
 		// Track the request
 		requestsMu.Lock()
