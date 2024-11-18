@@ -1,6 +1,5 @@
 package server
 
-//ratelimiting.go
 import (
 	"sync"
 	"time"
@@ -11,11 +10,10 @@ type NoRateLimiter struct{}
 
 // Allow always returns true for NoRateLimiter
 func (nrl *NoRateLimiter) Allow() bool {
-    return true
+	return true
 }
 
-
-// RateLimiter interface defines the Allow method to be used by both algorithms
+// RateLimiter interface defines the Allow method to be used by all algorithms
 type RateLimiter interface {
 	Allow() bool
 }
@@ -113,7 +111,7 @@ func NewSlidingWindow(limit int, windowSize time.Duration) *SlidingWindow {
 	return &SlidingWindow{
 		windowSize: windowSize,
 		limit:      limit,
-		timestamps: []time.Time{},
+		timestamps: make([]time.Time, 0, limit),
 	}
 }
 
@@ -123,16 +121,12 @@ func (sw *SlidingWindow) Allow() bool {
 	defer sw.mutex.Unlock()
 
 	now := time.Now()
-
-	// Remove timestamps outside the window
 	validWindowStart := now.Add(-sw.windowSize)
-	newTimestamps := []time.Time{}
-	for _, ts := range sw.timestamps {
-		if ts.After(validWindowStart) {
-			newTimestamps = append(newTimestamps, ts)
-		}
+
+	// Prune outdated timestamps
+	for len(sw.timestamps) > 0 && sw.timestamps[0].Before(validWindowStart) {
+		sw.timestamps = sw.timestamps[1:]
 	}
-	sw.timestamps = newTimestamps
 
 	// Check if within limit
 	if len(sw.timestamps) < sw.limit {
@@ -145,9 +139,9 @@ func (sw *SlidingWindow) Allow() bool {
 
 // FixedWindow struct for the fixed window algorithm
 type FixedWindow struct {
-	windowSize time.Duration
-	limit      int
-	count      int
+	windowSize  time.Duration
+	limit       int
+	count       int
 	windowStart time.Time
 	mutex       sync.Mutex
 }
@@ -170,7 +164,7 @@ func (fw *FixedWindow) Allow() bool {
 	now := time.Now()
 
 	// Check if we are still in the current window
-	if now.Sub(fw.windowStart) > fw.windowSize {
+	if now.Sub(fw.windowStart) >= fw.windowSize {
 		// Reset the window
 		fw.windowStart = now
 		fw.count = 0
