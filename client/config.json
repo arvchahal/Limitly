@@ -1,6 +1,6 @@
 {
-    "destination": "localhost:3000",
-    "duration": 10,
-    "rateType": "linear",
-    "params": [1, 5]
+    "destination": "10.74.188.206",
+    "duration": 60,
+    "rateType": "const",
+    "params": [100]
 }
